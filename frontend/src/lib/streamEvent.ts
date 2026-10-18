@@ -147,6 +147,11 @@ const KNOWN_EVENT_TYPES = new Set([
   "plan_revised",
   "task_state",
   "task_execution_interrupted",
+  "run_progress",
+  "branch_started",
+  "branch_completed",
+  "parallel_branches_started",
+  "parallel_branches_failed",
 ]);
 
 function asString(value: unknown, max = MAX_TEXT_LENGTH): string | undefined {

@@ -1321,7 +1321,13 @@ async def run(
     # Research depth mode: quick | standard | deep caps (P1 product control).
     _explicit_depth = None
     if isinstance(role_config, dict):
-        _explicit_depth = role_config.get("research_depth") or (role_config.get("budget") or {}).get("research_depth")
+        _explicit_depth = (
+            role_config.get("research_depth")
+            or (role_config.get("budget") or {}).get("research_depth")
+            or role_config.get("researchDepth")
+        )
+        if isinstance(role_config.get("budget"), dict) and not _explicit_depth:
+            _explicit_depth = role_config["budget"].get("research_depth") or role_config["budget"].get("researchDepth")
     max_steps, max_wall, _research_plan = apply_depth_budget_caps(
         max_steps=max_steps,
         max_wall=max_wall,

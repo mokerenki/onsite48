@@ -92,6 +92,7 @@ def create_graph(
         conversation_context: str
         task_metadata: dict
         is_follow_up: bool
+        research_depth: str
         confirmed_actions: dict
         rejected_tool_call: dict
         waiting_confirmation: dict
@@ -129,8 +130,8 @@ def create_graph(
             loop_role_config = dict(state.get("role_config", {}) or {})
             loop_role_config["conversation_context"] = state.get("conversation_context", "")
             loop_role_config["is_follow_up"] = bool(state.get("is_follow_up", False))
-            
-            result = await loop_run(
+            loop_role_config["research_depth"] = state.get("research_depth")
+            return await loop_run(
                 run_id,
                 goal,
                 loop_role_config,
@@ -247,10 +248,16 @@ class _LoopGraphShim:
                 except Exception:
                     pass
 
+            # Pass follow-up context through role_config so loop.run can use it
+            shim_role_config = dict(self._state.get("role_config", {}) or {})
+            shim_role_config["conversation_context"] = self._state.get("conversation_context", "")
+            shim_role_config["is_follow_up"] = bool(self._state.get("is_follow_up", False))
+            shim_role_config["research_depth"] = self._state.get("research_depth")
+
             result = await loop_run(
                 run_id,
                 goal,
-                {},
+                shim_role_config,
                 thread_id=self._state.get("thread_id"),
                 user_id=self._state.get("user_id"),
                 tenant_id=self._state.get("tenant_id"),

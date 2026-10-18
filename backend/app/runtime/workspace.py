@@ -136,7 +136,9 @@ class Workspace(ABC):
         script_name = f"_py_{uuid.uuid4().hex[:12]}.py"
         await self.write(script_name, code)
         try:
-            result = await self.exec(f"python3 {script_name}", timeout=timeout)
+            # Try both python3 and python for cross-platform compatibility
+            python_cmd = "python" if os.name == "nt" else "python3"
+            result = await self.exec(f"{python_cmd} {script_name}", timeout=timeout)
             return result.to_dict()
         finally:
             try:
@@ -219,13 +221,17 @@ class DevWorkspace(Workspace):
             await self.create()
         workdir = self._resolve(cwd) if cwd else self._home
         clean_env = {
-            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "HOME": str(self._home),
             "TMPDIR": str(self._home / "tmp"),
             "LANG": "C.UTF-8",
             "PYTHONUNBUFFERED": "1",
             "PYTHONDONTWRITEBYTECODE": "1",
         }
+        # Preserve system PATH on Windows for finding python/commands
+        if os.name == "nt":
+            clean_env["PATH"] = os.environ.get("PATH", "")
+        else:
+            clean_env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         for k in list(os.environ):
             if any(s in k.upper() for s in ("KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL", "API_")):
                 continue

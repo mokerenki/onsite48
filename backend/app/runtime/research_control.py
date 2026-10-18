@@ -510,9 +510,9 @@ def apply_depth_budget_caps(
     plan = plan_research(goal, explicit_depth=explicit_depth)
     steps = max_steps
     wall = max_wall
-    if plan.is_research and plan.max_steps_cap is not None and not explicit_steps:
+    if plan.is_research and plan.max_steps_cap is not None and (not explicit_steps or explicit_depth is not None):
         steps = min(steps, plan.max_steps_cap)
-    if plan.is_research and plan.max_wall_s_cap is not None and not explicit_wall:
+    if plan.is_research and plan.max_wall_s_cap is not None and (not explicit_wall or explicit_depth is not None):
         wall = min(wall, plan.max_wall_s_cap)
     return steps, wall, plan
 
