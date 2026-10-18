@@ -400,3 +400,80 @@ async def test_db_session_factory_resume_mid_run():
             assert len(model_calls) == 0
 
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_fast_path_depth_none_direct_answer():
+    """Short non-research goal (depth=none) answers directly without tools."""
+    from app.runtime import loop as loop_mod
+    from app.runtime.loop import run as loop_run
+
+    async def fake_complete(messages, tools=None, **kwargs):
+        assert tools is None or tools == []
+        return FakeCompleteResult(
+            content="The answer is 42.",
+            tool_calls=[],
+        )
+
+    with patch.object(loop_mod, "model_complete", side_effect=fake_complete):
+        result = await loop_run(str(uuid.uuid4()), "What is 2 plus 2?", {})
+    assert result.get("status") == "completed"
+    assert result["result"]["summary"] == "The answer is 42."
+
+
+@pytest.mark.asyncio
+async def test_fast_path_depth_quick_with_search():
+    """Short research goal (depth=quick) uses web_search then synthesizes."""
+    from app.runtime import loop as loop_mod
+    from app.runtime.loop import run as loop_run
+    from app.tools.registry import BaseTool, ToolRegistry, ToolSchema
+
+    class FakeSearchTool(BaseTool):
+        def _build_schema(self):
+            return ToolSchema(
+                name="browser",
+                description="Fake web search.",
+                parameters={"query": {"type": "string"}},
+                required=["query"],
+                idempotency="read_only",
+                approval_required=False,
+            )
+
+        async def execute(self, query: str, **_: Any):
+            return {"output": f"Search results for: {query}", "source": "fake"}
+
+    registry = ToolRegistry()
+    registry.register(FakeSearchTool())
+
+    calls = []
+
+    async def fake_complete(messages, tools=None, **kwargs):
+        calls.append(tools)
+        # First call: propose search
+        if len(calls) == 1:
+            return FakeCompleteResult(
+                content=None,
+                tool_calls=[{
+                    "id": "call_1",
+                    "name": "browser",
+                    "arguments": {"query": "Manus vs Tenssa"},
+                }],
+            )
+        # Second call: synthesize answer
+        return FakeCompleteResult(
+            content="Manus and Tenssa are different products.",
+            tool_calls=[],
+        )
+
+    with patch.object(loop_mod, "model_complete", side_effect=fake_complete):
+        result = await loop_run(
+            str(uuid.uuid4()),
+            "Manus vs Tenssa",
+            {},
+            registry=registry,
+            max_steps=5,
+        )
+    assert result.get("status") == "completed"
+    assert "Manus and Tenssa" in result["result"]["summary"]
+    # Two model calls: one to decide search, one to synthesize
+    assert len(calls) == 2

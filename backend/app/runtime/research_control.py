@@ -261,6 +261,10 @@ def select_research_depth(goal: str, *, explicit_depth: str | None = None) -> Re
         return "quick"
     if not is_research_goal(text):
         return "none"
+    # Short factual / comparison queries use quick depth for a fast
+    # single-turn answer instead of the heavy standard pipeline.
+    if len(text.split()) <= 20:
+        return "quick"
     return "standard"
 
 

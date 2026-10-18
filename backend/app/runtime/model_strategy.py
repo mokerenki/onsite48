@@ -53,7 +53,7 @@ _LANE_TO_ROUTER_ROLE: dict[str, str] = {
 # Preferred fallback chain names (router keys) per lane.
 _LANE_FALLBACK_CHAINS: dict[str, list[str]] = {
     "fast": ["deepseek", "kimi", "nvidia", "planner"],
-    "planner": ["planner", "nvidia", "kimi", "deepseek"],
+    "planner": ["deepseek", "planner", "nvidia", "kimi"],
     "coder": ["planner", "nvidia", "kimi", "deepseek"],
     "researcher": ["planner", "nvidia", "kimi", "deepseek"],
     "browser": ["nvidia", "kimi", "planner", "deepseek"],

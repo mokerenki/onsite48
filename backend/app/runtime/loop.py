@@ -1007,6 +1007,128 @@ async def _run_research_branch_simulated(
     )
 
 
+async def _run_fast_search_path(
+    *,
+    state: Any,
+    goal: str,
+    depth: str,
+    specs: dict[str, ToolSpec],
+    model_router: Any,
+    model_override: str | None,
+    event_emitter: Any,
+    journal: Any,
+    run_id: str,
+    cancel_event: Any,
+    registry: Any,
+    role_config: dict | None,
+    user_id: str | None,
+    tenant_id: str | None,
+    thread_id: str | None,
+) -> dict[str, Any]:
+    """Single-turn answer for simple factual / comparison queries.
+
+    Bypasses the plan driver, parallel research branches, verifier, and
+    memory distillation. Only reachable for top-level runs (not sub-branches)
+    whose research depth is "none" (direct answer) or "quick" (one web search
+    then answer). Intended for short goals like "Manus vs Tenssa" or "what is
+    the capital of France".
+    """
+    g = goal or getattr(state, "goal", "") or ""
+    short_goal = len(g.split()) <= 20
+
+    # Build a minimal message history for the model.
+    messages: list[dict[str, Any]] = []
+    system_prompt = (
+        "Answer the user's question directly and concisely. "
+        "If you need current facts, call web_search first, then synthesize "
+        "with citations. Do not over-explain."
+    )
+    messages.append({"role": "system", "content": system_prompt})
+    if getattr(state, "messages", None):
+        messages.extend(state.messages)
+    messages.append({"role": "user", "content": g})
+
+    # Select tools: web_search ("browser") for quick depth, none otherwise.
+    search_tool_name: str | None = None
+    tool_schemas: list[dict[str, Any]] = []
+    if depth == "quick" and short_goal and registry is not None:
+        search_tool = registry.get("browser") or registry.get("web_search")
+        if search_tool is not None:
+            tool_schemas = [search_tool.schema.to_dict()]
+            search_tool_name = search_tool.schema.name
+
+    # First model call: answer directly, or decide to search.
+    response = await model_complete(
+        messages,
+        tools=tool_schemas,
+        role="fast_path",
+        tool_choice="auto" if tool_schemas else "none",
+        model_override=model_override,
+        goal=g,
+        research_depth=depth,
+        tools_used=sorted([search_tool_name] if search_tool_name else []),
+    )
+
+    # If the model asked to search, execute the tool directly and re-call.
+    if response.tool_calls and search_tool_name:
+        search_tool = registry.get("browser") or registry.get("web_search")
+        if search_tool is not None:
+            for tc in response.tool_calls:
+                if tc.get("name") != search_tool_name:
+                    continue
+                args = tc.get("arguments") or {}
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        args = {"_raw": args}
+                try:
+                    search_result = await search_tool.execute(**args)
+                except Exception as exc:  # noqa: BLE001
+                    search_result = {"output": f"Search failed: {exc}"}
+                call_id = tc.get("id") or f"call_{uuid.uuid4().hex[:8]}"
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": response.content or "",
+                        "tool_calls": response.tool_calls,
+                    }
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": json.dumps(search_result),
+                    }
+                )
+                break
+
+            # Second model call: synthesize the final answer from search results.
+            response = await model_complete(
+                messages,
+                tools=[],
+                role="fast_path",
+                tool_choice="none",
+                model_override=model_override,
+                goal=g,
+                research_depth=depth,
+                tools_used=[],
+            )
+
+    finish_payload = {
+        "summary": response.content or "I couldn't find an answer.",
+        "status": "completed",
+        "evidence_refs": [],
+    }
+    await journal.append(run_id, "run_finished", finish_payload)
+    return _terminal_return(
+        "completed",
+        finish_payload,
+        state,
+        run_id=run_id,
+    )
+
+
 async def run(
     run_id: str,
     goal: str,
@@ -1194,7 +1316,7 @@ async def run(
     _mult = complexity_multiplier(_goal_for_budget)
     if _mult > 1.0 and not _explicit["steps"] and not role_config.get("max_steps") and not _rb.get("steps"):
         max_steps = min(int(max_steps * _mult), DEFAULT_MAX_STEPS * 2)
-        max_wall = min(max_wall * _mult, DEFAULT_MAX_WALL_S * 2)
+        max_wall = min(max_wall * _mult, DEFAULT_MAX_WALL_S * 2    )
 
     # Research depth mode: quick | standard | deep caps (P1 product control).
     _explicit_depth = None
@@ -1216,7 +1338,43 @@ async def run(
     if parent_run_id and not _explicit["wall"] and max_wall < 600:
         max_wall = 600.0
 
+    # ─── Fast path: simple factual / comparison queries ──────────────────
+    # Short-circuit before the plan driver, parallel branches, verifier, and
+    # distillation for top-level runs that need at most one web search.
+    # Exclude goals that need browser/computer interaction (click, navigate,
+    # open a page, etc.) — those go through the normal tool loop.
+    _g_for_depth = goal or getattr(state, "goal", "") or ""
+    _browser_signals = any(
+        k in _g_for_depth.lower()
+        for k in ("click", "website", "web page", "browser", "screenshot", "login to", "navigate", "open an example")
+    )
+    if (
+        not parent_run_id
+        and not _browser_signals
+        and _research_plan.depth in ("none", "quick")
+        and (_research_plan.depth == "none" or len(_g_for_depth.split()) <= 20)
+    ):
+        return await _run_fast_search_path(
+            state=state,
+            goal=goal,
+            depth=_research_plan.depth,
+            specs=specs,
+            model_router=model_router,
+            model_override=model_override,
+            event_emitter=event_emitter,
+            journal=j,
+            run_id=run_id,
+            cancel_event=cancel_event,
+            registry=registry,
+            role_config=role_config,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            thread_id=thread_id,
+        )
+
     # Fail fast when the goal looks like research but no search/browse tool exists.
+    # Skipped when the fast path already returned (depth="none" direct answers
+    # need no search tools; depth="quick" may use the registered browser tool).
     _goal_l = (goal or getattr(state, "goal", None) or "").lower()
     _researchy = is_research_goal(goal or getattr(state, "goal", None) or "")
     _search_tools = {
@@ -1299,28 +1457,24 @@ async def run(
     empty_response_nudges = 0
     finish_attempts = 0
     research_saturation_nudged = False
-    _run_research_plan = plan_research(
-        goal or getattr(state, "goal", "") or "",
-        explicit_depth=(role_config or {}).get("research_depth") if isinstance(role_config, dict) else None,
-    )
 
     auth_refresh_attempted: set[str] = set()
     untrusted_values: list[str] = list(getattr(state, "untrusted_values", None) or [])
     readbacks_ledger: list[dict[str, Any]] = []
     key_results: list[dict[str, Any]] = []
     _retrieval_count = weighted_retrieval_count(key_results)
-    if _run_research_plan.is_research:
+    if _research_plan.is_research:
         await j.append(
             run_id,
             "research_plan",
             {
-                "depth": _run_research_plan.depth,
-                "label": _run_research_plan.label,
-                "min_retrievals_before_finish": _run_research_plan.min_retrievals_before_finish,
-                "saturation_retrievals": _run_research_plan.saturation_retrievals,
+                "depth": _research_plan.depth,
+                "label": _research_plan.label,
+                "min_retrievals_before_finish": _research_plan.min_retrievals_before_finish,
+                "saturation_retrievals": _research_plan.saturation_retrievals,
                 "max_steps": max_steps,
                 "max_wall_s": max_wall,
-                "branch_count": len(_run_research_plan.branches),
+                "branch_count": len(_research_plan.branches),
             },
         )
 
@@ -1406,12 +1560,12 @@ async def run(
         if (
             not _parallel_branches_done
             and ENABLE_PARALLEL_RESEARCH
-            and _run_research_plan.is_research
-            and _run_research_plan.branches
+            and _research_plan.is_research
+            and _research_plan.branches
             and not parent_run_id  # only at the lead level
         ):
             _parallel_branches_done = True
-            _branches = _run_research_plan.branches
+            _branches = _research_plan.branches
             logger.info(
                 "runtime.parallel_branches_entering",
                 run_id=run_id,
@@ -1483,7 +1637,7 @@ async def run(
                     "content": {
                         "retrievals": _retrieval_count,
                         "steps": state.step_count,
-                        "depth": _run_research_plan.depth,
+                        "depth": _research_plan.depth,
                         "finish_attempts": finish_attempts,
                         "parallel_branches": len(_branches),
                     },
@@ -1627,7 +1781,7 @@ async def run(
             "content": {
                 "retrievals": _retrieval_count,
                 "steps": state.step_count,
-                "depth": getattr(locals().get("_run_research_plan"), "depth", None),
+                "depth": getattr(locals().get("_research_plan"), "depth", None),
                 "finish_attempts": finish_attempts,
             },
         })
@@ -1652,7 +1806,7 @@ async def run(
             _research_now = is_research_goal(_goal_now)
             _retrievals = _retrieval_count
             if empty_response_nudges == 1:
-                if _research_now and _retrievals < (_run_research_plan.min_retrievals_before_finish or 1):
+                if _research_now and _retrievals < (_research_plan.min_retrievals_before_finish or 1):
                     state.messages.append(
                         {
                             "role": "user",
@@ -1678,7 +1832,7 @@ async def run(
                     await j.append(run_id, "nudge", {"reason": "no_tool_calls"})
                     continue
             # Second+ empty tool-call turn
-            if _research_now and _retrievals < (_run_research_plan.min_retrievals_before_finish or 1):
+            if _research_now and _retrievals < (_research_plan.min_retrievals_before_finish or 1):
                 finish_payload = {
                     "summary": (
                         "Research did not run: the model produced an answer without using "
@@ -2028,7 +2182,7 @@ async def run(
                         retrieval_count=_retrieval_count,
                     )
                     if _block:
-                        if finish_gate_exhausted(finish_attempts, _retrieval_count, _run_research_plan.min_retrievals_before_finish):
+                        if finish_gate_exhausted(finish_attempts, _retrieval_count, _research_plan.min_retrievals_before_finish):
                             finish_payload = {
                                 "summary": "Research did not run: the model tried to finish without "
                                            "using retrieval tools. Please send the request again.",
@@ -2554,7 +2708,7 @@ async def run(
                             {
                                 "reason": "research_saturation",
                                 "retrievals": _retrieval_count,
-                                "depth": _run_research_plan.depth,
+                                "depth": _research_plan.depth,
                             },
                         )
 

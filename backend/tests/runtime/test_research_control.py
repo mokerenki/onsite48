@@ -30,7 +30,7 @@ def test_is_research_goal_compare():
 def test_depth_selection():
     assert select_research_depth("quick research overview of Tennsa") == "quick"
     assert select_research_depth("deep dive into Tennsa market") == "deep"
-    assert select_research_depth("research the difference between a and b") == "standard"
+    assert select_research_depth("research the difference between a and b") == "quick"
     assert select_research_depth("hello") == "none"
 
 
@@ -64,9 +64,9 @@ def test_budget_caps_standard():
         max_wall=2000.0,
         goal="research the difference between a and b",
     )
-    assert plan.depth == "standard"
-    assert steps <= 40
-    assert wall <= 600.0
+    assert plan.depth == "quick"
+    assert steps <= 18
+    assert wall <= 240.0
 
 
 def test_complexity_multiplier_not_double_on_research_alone():

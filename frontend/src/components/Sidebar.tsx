@@ -103,6 +103,43 @@ const ICONS: Record<string, { icon: typeof Search; color: string }> = {
   completed: { icon: CircleCheckBig, color: "text-emerald-600" }, failed: { icon: CircleX, color: "text-red-600" },
 };
 
+// Case-insensitive lookup so backend-sent keys like "Research", "WEB_SEARCH",
+// or "Web Search" still match the ICONS record.
+const ICONS_BY_KEY: Record<string, { icon: typeof Search; color: string }> = {};
+Object.entries(ICONS).forEach(([key, value]) => {
+  ICONS_BY_KEY[key.toLowerCase()] = value;
+});
+
+// Common backend value aliases -> canonical ICONS key.
+const ICON_ALIASES: Record<string, string> = {
+  web_search: "search", internet_search: "search", websearch: "search",
+  google_search: "search", brave_search: "search", tavily: "search",
+  research_task: "research", research: "research", market_research: "research",
+  competitor_research: "research", code_dev: "development", coding: "development",
+  software_dev: "development", dev: "development", web_dev: "development",
+  email_task: "email", mail_task: "email", gmail: "email", outlook: "email",
+  calendar_task: "calendar", scheduling: "calendar", meeting: "meeting",
+  document_task: "document", doc: "document", docx: "document",
+  data_task: "data", dataset: "data", spreadsheet_task: "spreadsheet",
+  excel: "spreadsheet", csv: "spreadsheet", finance_task: "finance",
+  accounting: "finance", budget: "finance", legal_task: "legal",
+  compliance: "legal", contract: "legal",
+};
+
+function resolveIconKey(rawKey: string | undefined): string {
+  if (!rawKey) return "";
+  const lowered = rawKey.toLowerCase().trim();
+  // Direct alias match first.
+  if (ICON_ALIASES[lowered]) return ICON_ALIASES[lowered];
+  // Case-insensitive direct match.
+  if (ICONS_BY_KEY[lowered]) return lowered;
+  // Try replacing spaces/underscores/hyphens with nothing.
+  const normalized = lowered.replace(/[\s_\-]+/g, "");
+  if (ICONS_BY_KEY[normalized]) return normalized;
+  if (ICON_ALIASES[normalized]) return ICON_ALIASES[normalized];
+  return "";
+}
+
 function fallbackIcon(title: string): string {
   const value = title.toLowerCase();
   if (/(gun|guns|knife|knives|weapon|weapons|firearm|violence|violent|danger|hazard|threat)/.test(value)) return "danger";
@@ -119,23 +156,30 @@ function fallbackIcon(title: string): string {
   if (/(marketing|funnel|analytics|revenue)/.test(value)) return "marketing";
   if (/(data|dataset|spreadsheet|csv|metrics)/.test(value)) return "data";
   if (/(report|document|proposal|write|presentation)/.test(value)) return "document";
-  return "sparkles";
+  if (/(meeting|call|schedule|appointment|calendar)/.test(value)) return "calendar";
+  if (/(shopping|buy|purchase|order|cart)/.test(value)) return "shopping";
+  if (/(travel|trip|flight|hotel|vacation)/.test(value)) return "travel";
+  if (/(health|fitness|medical|doctor|wellness)/.test(value)) return "health";
+  if (/(education|school|learn|course|study)/.test(value)) return "education";
+  if (/(finance|money|payment|invoice|budget|tax)/.test(value)) return "finance";
+  if (/(legal|contract|law|policy|compliance)/.test(value)) return "legal";
+  return "search";
 }
 
 function TaskGlyph({ task }: { task: RecentTask }) {
   const fallback = fallbackIcon(task.title);
-  const key =
-    (task.iconKey && ICONS[task.iconKey]) ? task.iconKey :
-    (task.category && ICONS[task.category]) ? task.category :
+  const resolvedKey =
+    resolveIconKey(task.iconKey) ||
+    resolveIconKey(task.category) ||
     fallback;
-  const entry = ICONS[key] || ICONS[fallback] || ICONS.sparkles;
+  const entry = ICONS_BY_KEY[resolvedKey] || ICONS_BY_KEY[fallback] || ICONS_BY_KEY.search;
   const colors = TASK_COLOR_TOKENS[task.iconColor || ""] || { tile: "bg-[#f1f1ee]", icon: "text-[#34322d]" };
   const Icon = entry.icon;
   const running = task.status === "running" || task.status === "queued";
   const waiting = task.status === "paused" || task.status === "waiting_for_approval";
   const failed = task.status === "failed" || task.status === "cancelled";
   const statusLabel = running ? "Running" : waiting ? "Waiting" : failed ? "Failed" : "Completed";
-  return <span className={`relative flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ring-1 ring-black/[0.06] ${colors.tile}`} title={`${task.category || key} · ${statusLabel}`}><Icon className={`h-4 w-4 ${colors.icon}`} /><span aria-label={statusLabel} className={`absolute -bottom-0.5 -right-0.5 h-1.5 w-1.5 rounded-full ring-1 ring-white ${running ? "animate-pulse bg-[#34322d]" : waiting ? "bg-[#6f6b61]" : failed ? "bg-[#171613]" : "bg-[#9a978c]"}`} /></span>;
+  return <span className={`relative flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ring-1 ring-black/[0.06] ${colors.tile}`} title={`${task.category || resolvedKey} · ${statusLabel}`}><Icon className={`h-4 w-4 ${colors.icon}`} /><span aria-label={statusLabel} className={`absolute -bottom-0.5 -right-0.5 h-1.5 w-1.5 rounded-full ring-1 ring-white ${running ? "animate-pulse bg-[#34322d]" : waiting ? "bg-[#6f6b61]" : failed ? "bg-[#171613]" : "bg-[#9a978c]"}`} /></span>;
 }
 
 function groupLabel(updatedAt?: string): "Today" | "Yesterday" | "Earlier" {

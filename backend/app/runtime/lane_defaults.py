@@ -12,10 +12,11 @@ from typing import Dict
 KIMI_DEFAULT = os.environ.get("KIMI_MODEL") or "kimi-latest"
 DEEPSEEK_DEFAULT = os.environ.get("DEEPSEEK_MODEL") or "deepseek-chat"
 
-# Lane → model. loop/worker use primary (Kimi); verifier/summarizer use DeepSeek.
+# Lane → model. loop/worker use primary (Kimi); planner/verifier/summarizer use DeepSeek.
 LANE_DEFAULTS: Dict[str, str] = {
     "loop": KIMI_DEFAULT,
     "worker": KIMI_DEFAULT,
+    "planner": DEEPSEEK_DEFAULT,
     "verifier": DEEPSEEK_DEFAULT,
     "summarizer": DEEPSEEK_DEFAULT,
     "vision": KIMI_DEFAULT,
